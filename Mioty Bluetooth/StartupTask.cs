@@ -127,7 +127,7 @@ namespace BackgroundApplicationDebug
         private DeviceInformation device = null;
 
 
-        private async void DeviceWatcher_Added(DeviceWatcher sender, DeviceInformation args)
+        private void DeviceWatcher_Added(DeviceWatcher sender, DeviceInformation args)
         {
             device = args;
 

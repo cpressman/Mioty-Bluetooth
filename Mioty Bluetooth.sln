@@ -5,7 +5,7 @@ VisualStudioVersion = 15.0.27703.2035
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Mioty Bluetooth", "Mioty Bluetooth\Mioty Bluetooth.csproj", "{72460042-9976-4BC0-B775-7F444CB78564}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BioSensor", "..\Watch Implimented V1.0\IOTCoreMasterApp-master\BioSensor\BioSensor.csproj", "{93719EBB-516F-4D25-83CE-0F0B3B795F5D}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BioSensor", "BioSensor\BioSensor.csproj", "{93719EBB-516F-4D25-83CE-0F0B3B795F5D}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

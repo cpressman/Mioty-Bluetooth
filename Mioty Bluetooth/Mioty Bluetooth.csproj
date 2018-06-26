@@ -131,7 +131,7 @@
     </PackageReference>
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\Watch Implimented V1.0\IOTCoreMasterApp-master\BioSensor\BioSensor.csproj">
+    <ProjectReference Include="..\BioSensor\BioSensor.csproj">
       <Project>{93719ebb-516f-4d25-83ce-0f0b3b795f5d}</Project>
       <Name>BioSensor</Name>
     </ProjectReference>
