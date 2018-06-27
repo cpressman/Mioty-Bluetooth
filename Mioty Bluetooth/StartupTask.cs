@@ -84,7 +84,8 @@ namespace BackgroundApplicationDebug
             "System.ItemNameDisplay:~~\"Adafruit\"",
              new string[] {
                     "System.Devices.Aep.DeviceAddress",
-                    "System.Devices.Aep.IsConnected" },
+                    "System.Devices.Aep.IsConnected"
+                    },
                 DeviceInformationKind.AssociationEndpoint);
 
             deviceWatcher.Added += DeviceWatcher_Added;
@@ -153,14 +154,6 @@ namespace BackgroundApplicationDebug
                     if (service.Uuid.ToString() == UUID_UART_SERV)
                     {
                         var characteristics = await service.GetCharacteristicsAsync();
-                        while (BLEdevice.ConnectionStatus == BluetoothConnectionStatus.Disconnected)
-                        {
-                            Debug.WriteLine("Device in use, waiting...");
-                            await Task.Delay(500);
-                            characteristics = await service.GetCharacteristicsAsync();
-                        }
-                        Debug.WriteLine("Watch connected");
-
                         foreach (var character in characteristics.Characteristics)
                         {
                             if (character.Uuid.ToString() == UUID_UART_RX)
