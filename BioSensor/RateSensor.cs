@@ -271,7 +271,7 @@ namespace BioSensor
                 await Task.Delay(1);
                 hrmSqi = I2C_ReadRegData(HrmSensor, AS7000_REG_HRM_SQI);
                 await Task.Delay(1);
-                hrmSync = I2C_ReadRegData(HrmSensor, AS7000_REG_HRM_SYNC);
+                //hrmSync = I2C_ReadRegData(HrmSensor, AS7000_REG_HRM_SYNC);
                 await Task.Delay(1);
                 //Debug.Write("\nHRM: Status="+hrmStatus.ToString()+" Rate="+hrmHeartRate.ToString()+" Sqi="+hrmSqi.ToString()+" sync="+hrmSync.ToString());
                 blockI2C = false; 
@@ -408,6 +408,7 @@ namespace BioSensor
             }
             catch (Exception ex) 
             {
+                Debug.WriteLine("Read Exception");
                 return 0; 
             }
         }
@@ -421,6 +422,7 @@ namespace BioSensor
             }
             catch (Exception ex)
             {
+                Debug.WriteLine("Write Exception");
             }
         }
 

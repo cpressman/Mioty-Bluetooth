@@ -53,7 +53,10 @@ namespace BackgroundApplicationDebug
 		RateSensor bs;
 
 		DeviceWatcher deviceWatcher;
-        ObservableCollection<DeviceInformation> deviceList = new ObservableCollection<DeviceInformation>();
+        BluetoothLEDevice BLEdevice;
+        GattCharacteristicsResult characteristics;
+
+        bool sent;
 
         // Adding UUIDs for the Nordic UART
         const string UUID_UART_SERV = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";//Nordic UART service
@@ -92,6 +95,8 @@ namespace BackgroundApplicationDebug
             deviceWatcher.Removed += DeviceWatcher_Removed;
             deviceWatcher.Start();
 
+            sent = false;
+
             this.timer = ThreadPoolTimer.CreateTimer(Timer_Tick, TimeSpan.FromSeconds(2));
 
             try
@@ -117,7 +122,52 @@ namespace BackgroundApplicationDebug
             //
         }
 
-        
+        private void ConnectionStatusChanged(BluetoothLEDevice sender, object args)
+        {
+            if (BLEdevice.ConnectionStatus == BluetoothConnectionStatus.Connected)
+                BLEConnected();
+        }
+
+        private async void BLEConnected()
+        {
+            Debug.WriteLine("Connected to Device");
+            foreach (var character in characteristics.Characteristics)
+            {
+                if (character.Uuid.ToString() == UUID_UART_RX)
+                {
+                    var heartRateHex = bs.GetHeartRateHex();
+                    // This should never happen
+                    if (heartRateHex.Length != 2)
+                    {
+                        BLEdevice.Dispose();
+                        return;
+                    }
+                    var writer = new DataWriter();
+                    GattCommunicationStatus s;
+                    var data = new byte[] { 0x41, 0x54, 0x2B, 0x43, 0x4D, 0x47, 0x53, 0x3D, 0x34, 0x0D, 0x36, 0x34, heartRateHex[0], heartRateHex[1], 0x1A, 0x0D };
+                    string hex = BitConverter.ToString(data);
+
+                    for (int i = 0; i < data.Length; i++)
+                    {
+                        writer.WriteByte(data[i]);
+                        if ((i + 1) % 20 == 0)
+                        {
+                            // Transmit 20 byte chunks
+                            s = await character.WriteValueAsync(writer.DetachBuffer());
+                            Debug.WriteLine("Send New Payload:" + s.ToString());
+                        }
+                    }
+                    // Transmit any leftovers
+                    if (data.Length % 20 != 0)
+                    {
+                        s = await character.WriteValueAsync(writer.DetachBuffer());
+                        Debug.WriteLine("Send New Payload:" + s.ToString());
+                    }
+                }
+            }
+            sent = true;
+            return;
+        }
 
         private void DeviceWatcher_Removed(DeviceWatcher sender, DeviceInformationUpdate args)
         {
@@ -143,7 +193,9 @@ namespace BackgroundApplicationDebug
                 return;
             }
 
-            BluetoothLEDevice BLEdevice = await BluetoothLEDevice.FromIdAsync(device.Id);
+            BLEdevice = await BluetoothLEDevice.FromIdAsync(device.Id);
+            BLEdevice.ConnectionStatusChanged += ConnectionStatusChanged;
+
             GattDeviceServicesResult result = await BLEdevice.GetGattServicesAsync();
 
             if (result.Status == GattCommunicationStatus.Success)
@@ -153,44 +205,15 @@ namespace BackgroundApplicationDebug
                 {
                     if (service.Uuid.ToString() == UUID_UART_SERV)
                     {
-                        var characteristics = await service.GetCharacteristicsAsync();
-                        foreach (var character in characteristics.Characteristics)
-                        {
-                            if (character.Uuid.ToString() == UUID_UART_RX)
-                            {
-								var heartRateHex = bs.GetHeartRateHex();
-								// This should never happen
-								if (heartRateHex.Length != 2) {
-									BLEdevice.Dispose();
-									return;
-								}
-								var writer = new DataWriter();
-								GattCommunicationStatus s;
-								var data = new byte[] { 0x41, 0x54, 0x2B, 0x43, 0x4D, 0x47, 0x53, 0x3D, 0x34, 0x0D, 0x36, 0x34, heartRateHex[0], heartRateHex[1], 0x1A, 0x0D };
-								string hex = BitConverter.ToString(data);
-
-								for (int i = 0; i < data.Length; i++) {
-									writer.WriteByte(data[i]);
-									if ((i+1)%20 == 0) {
-										// Transmit 20 byte chunks
-										s = await character.WriteValueAsync(writer.DetachBuffer());
-										Debug.WriteLine("Send New Payload:" + s.ToString());
-									}
-								}
-								// Transmit any leftovers
-								if (data.Length%20 != 0) {
-									s = await character.WriteValueAsync(writer.DetachBuffer());
-									Debug.WriteLine("Send New Payload:" + s.ToString());
-								}
-                            }
-                        }
-
+                        characteristics = await service.GetCharacteristicsAsync();
+                        Debug.WriteLine("Characteristics Gotten");
+                        while (!sent) { }
                     }
                     service.Dispose();
                 }
             }
-            Debug.WriteLine("Device Watcher Stopped");
-            deviceWatcher.Stop();
+            sent = false;
+            BLEdevice.ConnectionStatusChanged -= ConnectionStatusChanged;
             BLEdevice.Dispose();
             BLEdevice = null;
             GC.Collect();
@@ -199,11 +222,7 @@ namespace BackgroundApplicationDebug
         }
             private async void Timer_Tick(ThreadPoolTimer timer)
         {
-            if (deviceWatcher.Status == DeviceWatcherStatus.Stopped)
-            {
-                deviceWatcher.Start();
-                Debug.WriteLine("Device Watcher Restarted");
-            }
+            Debug.WriteLine("TICK");
             await UpdateAllData();
             this.timer = ThreadPoolTimer.CreateTimer(Timer_Tick, TimeSpan.FromSeconds(10));
         }
