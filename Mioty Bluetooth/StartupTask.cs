@@ -21,24 +21,21 @@
 // THE SOFTWARE. 
 // ---------------------------------------------------------------------------------
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-using System.Net.Http;
 using Windows.ApplicationModel.Background;
 using Windows.System.Threading;
 using System.Diagnostics;
-using Windows.Devices.Power;
 using System.Threading.Tasks;
-using Windows.System.Power;
 using Windows.Devices.Enumeration;
-using System.Collections.ObjectModel;
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.GenericAttributeProfile;
 using Windows.Storage.Streams;
-using Windows.Devices.Gpio;
-using Windows.Devices.I2c;
 using BioSensor;
+using Windows.Devices.Sensors;
+using Windows.Networking.Proximity;
+using System.Runtime.InteropServices.WindowsRuntime;
+using NdefLibrary.Ndef;
 
 
 // The Background Application template is documented at http://go.microsoft.com/fwlink/?LinkID=533884&clcid=0x409
@@ -50,13 +47,22 @@ namespace BackgroundApplicationDebug
         ThreadPoolTimer timer;
         BackgroundTaskDeferral _deferral;
 
-		RateSensor bs;
+        //private BluetoothLEDevice device = null; 
+        private DeviceInformation device = null;
 
-		DeviceWatcher deviceWatcher;
+        RateSensor bs;
+
+        DeviceWatcher deviceWatcher;
         BluetoothLEDevice BLEdevice;
         GattCharacteristicsResult characteristics;
 
         bool sent;
+
+        // Accelerometer
+        private Windows.Devices.Sensors.Accelerometer _accelerometer;
+
+        // NFC
+        private Windows.Networking.Proximity.ProximityDevice proxDevice;
 
         // Adding UUIDs for the Nordic UART
         const string UUID_UART_SERV = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";//Nordic UART service
@@ -74,16 +80,16 @@ namespace BackgroundApplicationDebug
 
             _deferral = taskInstance.GetDeferral();
 
-			await Task.Delay(30000);
+            await Task.Delay(30000);
 
-			bs = new RateSensor();
-			bs.RateSensorInit();
+            bs = new RateSensor();
+            bs.RateSensorInit();
 
-			await Task.Delay(1000);
+            await Task.Delay(1000);
 
-			bs.RateMonitorON();
+            bs.RateMonitorON();
 
-			deviceWatcher = DeviceInformation.CreateWatcher(
+            deviceWatcher = DeviceInformation.CreateWatcher(
             "System.ItemNameDisplay:~~\"Adafruit\"",
              new string[] {
                     "System.Devices.Aep.DeviceAddress",
@@ -96,6 +102,27 @@ namespace BackgroundApplicationDebug
             deviceWatcher.Start();
 
             sent = false;
+
+            // Accelerometer
+            _accelerometer = Windows.Devices.Sensors.Accelerometer.GetDefault();
+            if (_accelerometer == null)
+            {
+                Debug.WriteLine("No accelerometer found");
+            }
+
+            // NFC
+            proxDevice = ProximityDevice.GetDefault();
+            if (proxDevice != null)
+            {
+                proxDevice.DeviceArrived += DeviceArrived;
+                proxDevice.DeviceDeparted += DeviceDeparted;
+                proxDevice.SubscribeForMessage("NDEF", messagedReceived);
+
+            }
+            else
+            {
+                Debug.WriteLine("No proximity device found\n");
+            }
 
             this.timer = ThreadPoolTimer.CreateTimer(Timer_Tick, TimeSpan.FromSeconds(2));
 
@@ -114,20 +141,17 @@ namespace BackgroundApplicationDebug
             {
             }
             deviceWatcher.Stop();
-
-            //
-            // Once the asynchronous method(s) are done, close the deferral.
-            //
-            //_deferral.Complete();
-            //
         }
 
+        // When the Bluetooth device gets connected or disconnected we will come in here.
+        // For now we are just interested in when the device is connected.
         private void ConnectionStatusChanged(BluetoothLEDevice sender, object args)
         {
             if (BLEdevice.ConnectionStatus == BluetoothConnectionStatus.Connected)
                 BLEConnected();
         }
 
+        // This is where we send the send the data for hearbeat and accelerometer
         private async void BLEConnected()
         {
             Debug.WriteLine("Connected to Device");
@@ -142,41 +166,55 @@ namespace BackgroundApplicationDebug
                         BLEdevice.Dispose();
                         return;
                     }
-                    var writer = new DataWriter();
-                    GattCommunicationStatus s;
-                    var data = new byte[] { 0x41, 0x54, 0x2B, 0x43, 0x4D, 0x47, 0x53, 0x3D, 0x34, 0x0D, 0x36, 0x34, heartRateHex[0], heartRateHex[1], 0x1A, 0x0D };
+                    // Configure and send Heartbeat data using the AT command
+                    var data = new byte[] { 0x41, 0x54, 0x2B, 0x43, 0x4D, 0x47, 0x53, 0x3D, 0x34, 0x0D, 0x36, 0x34,
+                        heartRateHex[0], heartRateHex[1], 0x1A, 0x0D };
                     string hex = BitConverter.ToString(data);
+                    await MiotyTransmitter(character, data, "Heartbeat");
 
-                    for (int i = 0; i < data.Length; i++)
-                    {
-                        writer.WriteByte(data[i]);
-                        if ((i + 1) % 20 == 0)
-                        {
-                            // Transmit 20 byte chunks
-                            s = await character.WriteValueAsync(writer.DetachBuffer());
-                            Debug.WriteLine("Send New Payload:" + s.ToString());
-                        }
-                    }
-                    // Transmit any leftovers
-                    if (data.Length % 20 != 0)
-                    {
-                        s = await character.WriteValueAsync(writer.DetachBuffer());
-                        Debug.WriteLine("Send New Payload:" + s.ToString());
-                    }
+                    // Configure and send Accelerometer data using the AT command
+                    AccelerometerReading reading = _accelerometer.GetCurrentReading();
+                    var AccelerometerHex = ConvertAccelerometerForMioty(reading);
+                    
+                    data = new byte[] { 0x41, 0x54, 0x2B, 0x43, 0x4D, 0x47, 0x53, 0x3D, 0x31, 0x30, 0x0D, 0x36, 0x36,
+                        AccelerometerHex[0], AccelerometerHex[1], AccelerometerHex[2], AccelerometerHex[3],
+                        AccelerometerHex[4], AccelerometerHex[5], AccelerometerHex[6], AccelerometerHex[7], 0x1A, 0x0D };
+
+                    await MiotyTransmitter(character, data, "Accelerometer");
                 }
             }
+            // Signal the waiting thread to continue
             sent = true;
             return;
         }
 
-        private void DeviceWatcher_Removed(DeviceWatcher sender, DeviceInformationUpdate args)
+        // This functions takes in the UART characteristic and the byte array to transmit and sends it to the device
+        private async Task MiotyTransmitter(GattCharacteristic character, byte[] data, string messageSent)
         {
-            device = null; 
+            var writer = new DataWriter();
+            GattCommunicationStatus s;
+            for (int i = 0; i < data.Length; i++)
+            {
+                writer.WriteByte(data[i]);
+                if ((i + 1) % 20 == 0)
+                {
+                    // Transmit 20 byte chunks because of BLE's limitations
+                    s = await character.WriteValueAsync(writer.DetachBuffer());
+                    Debug.WriteLine("Send New Payload:" + s.ToString());
+                }
+            }
+            // Transmit any leftovers
+            if (data.Length % 20 != 0)
+            {
+                s = await character.WriteValueAsync(writer.DetachBuffer());
+                Debug.WriteLine("Send " + messageSent + " Payload: " + s.ToString());
+            }
         }
 
-        //private BluetoothLEDevice device = null; 
-        private DeviceInformation device = null;
-
+        private void DeviceWatcher_Removed(DeviceWatcher sender, DeviceInformationUpdate args)
+        {
+            device = null;
+        }
 
         private void DeviceWatcher_Added(DeviceWatcher sender, DeviceInformation args)
         {
@@ -185,6 +223,7 @@ namespace BackgroundApplicationDebug
             Debug.WriteLine("Device Added");
         }
 
+        // Connect to the BLE device and send the data
         private async Task UpdateAllData()
         {
             if (device == null)
@@ -212,6 +251,7 @@ namespace BackgroundApplicationDebug
                     service.Dispose();
                 }
             }
+            // Clean up the garbage. These steps are needed in order to dispose the connection to the BLE device.
             sent = false;
             BLEdevice.ConnectionStatusChanged -= ConnectionStatusChanged;
             BLEdevice.Dispose();
@@ -220,47 +260,96 @@ namespace BackgroundApplicationDebug
             Debug.WriteLine("Garbage Collected");
             return;
         }
-            private async void Timer_Tick(ThreadPoolTimer timer)
+        private async void Timer_Tick(ThreadPoolTimer timer)
         {
             Debug.WriteLine("TICK");
             await UpdateAllData();
             this.timer = ThreadPoolTimer.CreateTimer(Timer_Tick, TimeSpan.FromSeconds(10));
         }
 
-        private async Task<BatteryReport> GetBatteryStatus()
+        // Using the packet format 
+        private byte[] ConvertAccelerometerForMioty(AccelerometerReading reading)
         {
-            string batteryStatus;
-            int batteryPercent;
-
-            var deviceInfo = await DeviceInformation.FindAllAsync(Battery.GetDeviceSelector());
-            BatteryReport br = null;
-            foreach (DeviceInformation device in deviceInfo)
+            double[] arr = { reading.AccelerationX, reading.AccelerationY, reading.AccelerationZ };
+            double max = arr.Max();
+            double min = arr.Min();
+            double precision;
+            if (Math.Abs(max) > Math.Abs(min))
             {
-                try
-                {
-                    // Create battery object
-                    var battery = await Battery.FromIdAsync(device.Id);
+                precision = Math.Ceiling(max * 2);
+            }
+            else
+                precision = Math.Ceiling(Math.Abs(min) * 2);
 
-                    // Get report
-                    var report = battery.GetReport();
-                    br = report;
-                    batteryStatus = report.Status.ToString();
-                    if (batteryStatus == "Idle")
-                    {
-                        batteryStatus = PowerManager.RemainingChargePercent.ToString() + "%";
-                    }
+            var AccelerometerHex = new byte[8];
+            sbyte SBytePreceision = Convert.ToSByte(precision);
+            var ret = SByteIntoHexForMioty(SBytePreceision);
+            AccelerometerHex[0] = ret[0];
+            AccelerometerHex[1] = ret[1];
+            for (int i = 0; i < 3; i++)
+            {
+                var temp = arr[i];
+                int factor;
+                if (temp > 0)
+                    factor = 127;
+                else
+                    factor = 128;
+
+                sbyte SByteAccelerometer = Convert.ToSByte(factor * temp / (precision / 2));
+                ret = SByteIntoHexForMioty(SByteAccelerometer);
+                AccelerometerHex[2 + i * 2] = ret[0];
+                AccelerometerHex[3 + i * 2] = ret[1];
+            }
+            return AccelerometerHex;
+        }
+
+        // Turns the int value into 2 nibbles
+        private byte[] SByteIntoHexForMioty(sbyte input)
+        {
+            var output = new byte[2];
+            string heartRateHexString = input.ToString("X2");
+            int i = 0;
+            foreach (char letter in heartRateHexString)
+            {
+                output[i] = (byte)letter;
+                i++;
+            }
+            return output;
+        }
+
+        // We have received a new NFC message, for now just see what it is.
+        // TODO: send it to BLE device
+        private void messagedReceived(ProximityDevice device, ProximityMessage m)
+        {
+            uint x = m.Data.Length;
+            byte[] b = new byte[x];
+            b = m.Data.ToArray();
+
+            NdefMessage ndefMessage = NdefMessage.FromByteArray(b);
+
+            foreach (NdefRecord record in ndefMessage)
+            {
+                if (record.CheckSpecializedType(false) == typeof(NdefUriRecord))
+                {
+                    var uriRecord = new NdefUriRecord(record);
+                    Debug.WriteLine("\nURI: " + uriRecord.Uri);
 
                 }
-                catch (Exception e)
+                if (record.CheckSpecializedType(false) == typeof(NdefTextRecord))
                 {
-                    /* Add error handling, as applicable */
+                    var textRecord = new NdefTextRecord(record);
+                    Debug.WriteLine("\nTEXT: " + textRecord.Text);
                 }
             }
+        }
 
-            batteryPercent = PowerManager.RemainingChargePercent;
-            return br;
+        public void DeviceArrived(ProximityDevice proximityDevice)
+        {
+            Debug.WriteLine("Proximate device arrived\n");
+        }
+        public void DeviceDeparted(ProximityDevice proximityDevice)
+        {
+            Debug.WriteLine("Proximate device departed\n");
         }
     }
-
-
 }
