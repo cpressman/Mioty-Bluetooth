@@ -63,11 +63,26 @@ namespace BackgroundApplicationDebug
 
         // NFC
         private Windows.Networking.Proximity.ProximityDevice proxDevice;
+        string NFCText;
+        bool bNFCText;
 
         // Adding UUIDs for the Nordic UART
         const string UUID_UART_SERV = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";//Nordic UART service
         const string UUID_UART_TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";//TX Read Notify
         const string UUID_UART_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";//RX, Write characteristic
+
+        byte[] ATCMGS = { 0x41, 0x54, 0x2B, 0x43, 0x4D, 0x47, 0x53, 0x3D };
+        byte[] AT_SUFFIX = { 0x1A, 0x0D };
+
+        byte[] HEARTBEAT_ID = { 0x36, 0x34 };
+        byte[] HEARTBEAT_SIZE_CR = { 0x34, 0x0D };
+
+        byte[] NFC_ID = { 0x36, 0x35 };
+
+        byte[] ACCEL_ID = { 0x36, 0x36 };
+        byte[] ACCEL_SIZE_CR = { 0x31, 0x30, 0x0D };
+
+        byte[] CR = { 0x0D };
 
         public async void Run(IBackgroundTaskInstance taskInstance)
         {
@@ -103,21 +118,11 @@ namespace BackgroundApplicationDebug
 
             sent = false;
 
-            // Accelerometer
-            _accelerometer = Windows.Devices.Sensors.Accelerometer.GetDefault();
-            if (_accelerometer == null)
-            {
-                Debug.WriteLine("No accelerometer found");
-            }
-
             // NFC
             proxDevice = ProximityDevice.GetDefault();
             if (proxDevice != null)
             {
-                proxDevice.DeviceArrived += DeviceArrived;
-                proxDevice.DeviceDeparted += DeviceDeparted;
                 proxDevice.SubscribeForMessage("NDEF", messagedReceived);
-
             }
             else
             {
@@ -159,28 +164,40 @@ namespace BackgroundApplicationDebug
             {
                 if (character.Uuid.ToString() == UUID_UART_RX)
                 {
-                    var heartRateHex = bs.GetHeartRateHex();
-                    // This should never happen
-                    if (heartRateHex.Length != 2)
-                    {
-                        BLEdevice.Dispose();
-                        return;
-                    }
+                    // Heartbeat Data
+                    var heartRateHex = bs.GetHeartRateHexForMioty();
+                    
                     // Configure and send Heartbeat data using the AT command
-                    var data = new byte[] { 0x41, 0x54, 0x2B, 0x43, 0x4D, 0x47, 0x53, 0x3D, 0x34, 0x0D, 0x36, 0x34,
-                        heartRateHex[0], heartRateHex[1], 0x1A, 0x0D };
-                    string hex = BitConverter.ToString(data);
-                    await MiotyTransmitter(character, data, "Heartbeat");
+                    var HeartbeatData = ATCMGS.Concat(HEARTBEAT_SIZE_CR).Concat(HEARTBEAT_ID).Concat(heartRateHex).Concat(AT_SUFFIX).ToArray();
+                    await MiotyTransmitter(character, HeartbeatData, "Heartbeat");
+
+                    // Accelerometer Data
+                    _accelerometer = Windows.Devices.Sensors.Accelerometer.GetDefault();
+                    if (_accelerometer == null)
+                    {
+                        Debug.WriteLine("No accelerometer found");
+                    }
 
                     // Configure and send Accelerometer data using the AT command
                     AccelerometerReading reading = _accelerometer.GetCurrentReading();
-                    var AccelerometerHex = ConvertAccelerometerForMioty(reading);
-                    
-                    data = new byte[] { 0x41, 0x54, 0x2B, 0x43, 0x4D, 0x47, 0x53, 0x3D, 0x31, 0x30, 0x0D, 0x36, 0x36,
-                        AccelerometerHex[0], AccelerometerHex[1], AccelerometerHex[2], AccelerometerHex[3],
-                        AccelerometerHex[4], AccelerometerHex[5], AccelerometerHex[6], AccelerometerHex[7], 0x1A, 0x0D };
+                    _accelerometer = null;
 
-                    await MiotyTransmitter(character, data, "Accelerometer");
+                    var AccelerometerHex = ConvertAccelerometerForMioty(reading);
+                    var AccelData = ATCMGS.Concat(ACCEL_SIZE_CR).Concat(ACCEL_ID).Concat(AccelerometerHex).Concat(AT_SUFFIX).ToArray();
+
+                    await MiotyTransmitter(character, AccelData, "Accelerometer");
+
+                    // NFC Data
+                    if (bNFCText)
+                    {
+                        var NFCHex = StringIntoHexForMioty(NFCText);
+                        var Size = IntIntoHexForMioty(NFCHex.Count() + 2);
+
+                        var NFCData = ATCMGS.Concat(Size).Concat(CR).Concat(NFC_ID).Concat(NFCHex).Concat(AT_SUFFIX).ToArray();
+                        
+                        bNFCText = false;
+                        await MiotyTransmitter(character, NFCData, "NFC");
+                    }
                 }
             }
             // Signal the waiting thread to continue
@@ -200,15 +217,16 @@ namespace BackgroundApplicationDebug
                 {
                     // Transmit 20 byte chunks because of BLE's limitations
                     s = await character.WriteValueAsync(writer.DetachBuffer());
-                    Debug.WriteLine("Send New Payload:" + s.ToString());
+                    Debug.WriteLine("Send " + messageSent + " Payload: " + s.ToString() + " part " + (i+1)/20);
                 }
             }
             // Transmit any leftovers
             if (data.Length % 20 != 0)
             {
                 s = await character.WriteValueAsync(writer.DetachBuffer());
-                Debug.WriteLine("Send " + messageSent + " Payload: " + s.ToString());
+                Debug.WriteLine("Send " + messageSent + " Payload: " + s.ToString() + " final part");
             }
+            await Task.Delay(5000);
         }
 
         private void DeviceWatcher_Removed(DeviceWatcher sender, DeviceInformationUpdate args)
@@ -276,10 +294,10 @@ namespace BackgroundApplicationDebug
             double precision;
             if (Math.Abs(max) > Math.Abs(min))
             {
-                precision = Math.Ceiling(max * 2);
+                precision = Math.Ceiling(max);
             }
             else
-                precision = Math.Ceiling(Math.Abs(min) * 2);
+                precision = Math.Ceiling(Math.Abs(min));
 
             var AccelerometerHex = new byte[8];
             sbyte SBytePreceision = Convert.ToSByte(precision);
@@ -289,13 +307,9 @@ namespace BackgroundApplicationDebug
             for (int i = 0; i < 3; i++)
             {
                 var temp = arr[i];
-                int factor;
-                if (temp > 0)
-                    factor = 127;
-                else
-                    factor = 128;
+                int factor = 127;
 
-                sbyte SByteAccelerometer = Convert.ToSByte(factor * temp / (precision / 2));
+                sbyte SByteAccelerometer = Convert.ToSByte(factor * temp / precision);
                 ret = SByteIntoHexForMioty(SByteAccelerometer);
                 AccelerometerHex[2 + i * 2] = ret[0];
                 AccelerometerHex[3 + i * 2] = ret[1];
@@ -317,6 +331,35 @@ namespace BackgroundApplicationDebug
             return output;
         }
 
+        private byte[] StringIntoHexForMioty(string input)
+        {
+            byte[] data = Encoding.ASCII.GetBytes(input);
+
+            string hex = BitConverter.ToString(data).Replace("-", string.Empty);
+
+            var output = new byte[hex.Count()];
+            int i = 0;
+            foreach (char letter in hex)
+            {
+                output[i] = (byte)letter;
+                i++;
+            }
+            return output;
+        }
+
+        private byte[] IntIntoHexForMioty(int input)
+        {
+            string heartRateHexString = input.ToString();
+            var output = new byte[heartRateHexString.Count()];
+            int i = 0;
+            foreach (char letter in heartRateHexString)
+            {
+                output[i] = (byte)letter;
+                i++;
+            }
+            return output;
+        }
+
         // We have received a new NFC message, for now just see what it is.
         // TODO: send it to BLE device
         private void messagedReceived(ProximityDevice device, ProximityMessage m)
@@ -329,27 +372,14 @@ namespace BackgroundApplicationDebug
 
             foreach (NdefRecord record in ndefMessage)
             {
-                if (record.CheckSpecializedType(false) == typeof(NdefUriRecord))
-                {
-                    var uriRecord = new NdefUriRecord(record);
-                    Debug.WriteLine("\nURI: " + uriRecord.Uri);
-
-                }
                 if (record.CheckSpecializedType(false) == typeof(NdefTextRecord))
                 {
                     var textRecord = new NdefTextRecord(record);
                     Debug.WriteLine("\nTEXT: " + textRecord.Text);
+                    NFCText = textRecord.Text;
+                    bNFCText = true;
                 }
             }
-        }
-
-        public void DeviceArrived(ProximityDevice proximityDevice)
-        {
-            Debug.WriteLine("Proximate device arrived\n");
-        }
-        public void DeviceDeparted(ProximityDevice proximityDevice)
-        {
-            Debug.WriteLine("Proximate device departed\n");
         }
     }
 }

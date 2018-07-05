@@ -288,7 +288,7 @@ namespace BioSensor
 		{
 			return hrmHeartRate;
 		}
-		public byte[] GetHeartRateHex()
+		public byte[] GetHeartRateHexForMioty()
 		{
 			int heartRateInt = GetHeartRateInt();
 			if (heartRateInt > 255)
