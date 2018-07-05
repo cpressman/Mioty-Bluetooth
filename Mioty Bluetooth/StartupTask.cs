@@ -55,6 +55,7 @@ namespace BackgroundApplicationDebug
         DeviceWatcher deviceWatcher;
         BluetoothLEDevice BLEdevice;
         GattCharacteristicsResult characteristics;
+        GattCharacteristic character;
 
         bool sent;
 
@@ -146,64 +147,7 @@ namespace BackgroundApplicationDebug
             {
             }
             deviceWatcher.Stop();
-        }
-
-        // When the Bluetooth device gets connected or disconnected we will come in here.
-        // For now we are just interested in when the device is connected.
-        private void ConnectionStatusChanged(BluetoothLEDevice sender, object args)
-        {
-            if (BLEdevice.ConnectionStatus == BluetoothConnectionStatus.Connected)
-                BLEConnected();
-        }
-
-        // This is where we send the send the data for hearbeat and accelerometer
-        private async void BLEConnected()
-        {
-            Debug.WriteLine("Connected to Device");
-            foreach (var character in characteristics.Characteristics)
-            {
-                if (character.Uuid.ToString() == UUID_UART_RX)
-                {
-                    // Heartbeat Data
-                    var heartRateHex = bs.GetHeartRateHexForMioty();
-                    
-                    // Configure and send Heartbeat data using the AT command
-                    var HeartbeatData = ATCMGS.Concat(HEARTBEAT_SIZE_CR).Concat(HEARTBEAT_ID).Concat(heartRateHex).Concat(AT_SUFFIX).ToArray();
-                    await MiotyTransmitter(character, HeartbeatData, "Heartbeat");
-
-                    // Accelerometer Data
-                    _accelerometer = Windows.Devices.Sensors.Accelerometer.GetDefault();
-                    if (_accelerometer == null)
-                    {
-                        Debug.WriteLine("No accelerometer found");
-                    }
-
-                    // Configure and send Accelerometer data using the AT command
-                    AccelerometerReading reading = _accelerometer.GetCurrentReading();
-                    _accelerometer = null;
-
-                    var AccelerometerHex = ConvertAccelerometerForMioty(reading);
-                    var AccelData = ATCMGS.Concat(ACCEL_SIZE_CR).Concat(ACCEL_ID).Concat(AccelerometerHex).Concat(AT_SUFFIX).ToArray();
-
-                    await MiotyTransmitter(character, AccelData, "Accelerometer");
-
-                    // NFC Data
-                    if (bNFCText)
-                    {
-                        var NFCHex = StringIntoHexForMioty(NFCText);
-                        var Size = IntIntoHexForMioty(NFCHex.Count() + 2);
-
-                        var NFCData = ATCMGS.Concat(Size).Concat(CR).Concat(NFC_ID).Concat(NFCHex).Concat(AT_SUFFIX).ToArray();
-                        
-                        bNFCText = false;
-                        await MiotyTransmitter(character, NFCData, "NFC");
-                    }
-                }
-            }
-            // Signal the waiting thread to continue
-            sent = true;
-            return;
-        }
+        }  
 
         // This functions takes in the UART characteristic and the byte array to transmit and sends it to the device
         private async Task MiotyTransmitter(GattCharacteristic character, byte[] data, string messageSent)
@@ -234,9 +178,33 @@ namespace BackgroundApplicationDebug
             device = null;
         }
 
-        private void DeviceWatcher_Added(DeviceWatcher sender, DeviceInformation args)
+        private async void DeviceWatcher_Added(DeviceWatcher sender, DeviceInformation args)
         {
             device = args;
+
+            BLEdevice = await BluetoothLEDevice.FromIdAsync(device.Id);
+
+            GattDeviceServicesResult result = await BLEdevice.GetGattServicesAsync();
+
+            if (result.Status == GattCommunicationStatus.Success)
+            {
+                var services = result.Services;
+                foreach (var service in services)
+                {
+                    if (service.Uuid.ToString() == UUID_UART_SERV)
+                    {
+                        characteristics = await service.GetCharacteristicsAsync();
+
+                        foreach (var characteristic in characteristics.Characteristics)
+                        {
+                            if (characteristic.Uuid.ToString() == UUID_UART_RX)
+                            {
+                                character = characteristic;
+                            }
+                        }
+                    }
+                }
+            }
 
             Debug.WriteLine("Device Added");
         }
@@ -250,32 +218,41 @@ namespace BackgroundApplicationDebug
                 return;
             }
 
-            BLEdevice = await BluetoothLEDevice.FromIdAsync(device.Id);
-            BLEdevice.ConnectionStatusChanged += ConnectionStatusChanged;
+           
+            // Heartbeat Data
+            var heartRateHex = bs.GetHeartRateHexForMioty();
 
-            GattDeviceServicesResult result = await BLEdevice.GetGattServicesAsync();
+            // Configure and send Heartbeat data using the AT command
+            var HeartbeatData = ATCMGS.Concat(HEARTBEAT_SIZE_CR).Concat(HEARTBEAT_ID).Concat(heartRateHex).Concat(AT_SUFFIX).ToArray();
+            await MiotyTransmitter(character, HeartbeatData, "Heartbeat");
 
-            if (result.Status == GattCommunicationStatus.Success)
+            // Accelerometer Data
+            _accelerometer = Windows.Devices.Sensors.Accelerometer.GetDefault();
+            if (_accelerometer == null)
             {
-                var services = result.Services;
-                foreach (var service in services)
-                {
-                    if (service.Uuid.ToString() == UUID_UART_SERV)
-                    {
-                        characteristics = await service.GetCharacteristicsAsync();
-                        Debug.WriteLine("Characteristics Gotten");
-                        while (!sent) { }
-                    }
-                    service.Dispose();
-                }
+                Debug.WriteLine("No accelerometer found");
             }
-            // Clean up the garbage. These steps are needed in order to dispose the connection to the BLE device.
-            sent = false;
-            BLEdevice.ConnectionStatusChanged -= ConnectionStatusChanged;
-            BLEdevice.Dispose();
-            BLEdevice = null;
-            GC.Collect();
-            Debug.WriteLine("Garbage Collected");
+
+            // Configure and send Accelerometer data using the AT command
+            AccelerometerReading reading = _accelerometer.GetCurrentReading();
+            _accelerometer = null;
+
+            var AccelerometerHex = ConvertAccelerometerForMioty(reading);
+            var AccelData = ATCMGS.Concat(ACCEL_SIZE_CR).Concat(ACCEL_ID).Concat(AccelerometerHex).Concat(AT_SUFFIX).ToArray();
+
+            await MiotyTransmitter(character, AccelData, "Accelerometer");
+
+            // NFC Data
+            if (bNFCText)
+            {
+                var NFCHex = StringIntoHexForMioty(NFCText);
+                var Size = IntIntoHexForMioty(NFCHex.Count() + 2);
+
+                var NFCData = ATCMGS.Concat(Size).Concat(CR).Concat(NFC_ID).Concat(NFCHex).Concat(AT_SUFFIX).ToArray();
+
+                bNFCText = false;
+                await MiotyTransmitter(character, NFCData, "NFC");
+            }
             return;
         }
         private async void Timer_Tick(ThreadPoolTimer timer)
