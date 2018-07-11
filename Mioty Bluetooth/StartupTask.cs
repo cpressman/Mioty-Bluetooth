@@ -57,8 +57,6 @@ namespace BackgroundApplicationDebug
         GattCharacteristicsResult characteristics;
         GattCharacteristic character;
 
-        bool sent;
-
         // Accelerometer
         private Windows.Devices.Sensors.Accelerometer _accelerometer;
 
@@ -116,8 +114,6 @@ namespace BackgroundApplicationDebug
             deviceWatcher.Added += DeviceWatcher_Added;
             deviceWatcher.Removed += DeviceWatcher_Removed;
             deviceWatcher.Start();
-
-            sent = false;
 
             // NFC
             proxDevice = ProximityDevice.GetDefault();
